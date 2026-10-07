@@ -68,11 +68,15 @@ def cmd_analyze(args) -> None:
     triggers = find_triggers(matches, rules, since, until)
     rows = [summarize(f"СТРАТЕГИЯ: {rules.describe()}", triggers)]
     for g, name in (("M", "  мужчины"), ("W", "  женщины")):
-        rows.append(summarize(name, [t for t in triggers if t.match.gender == g]))
+        if args.gender == "all":
+            rows.append(summarize(name, [t for t in triggers if t.match.gender == g]))
     tours = sorted({t.match.tour for t in triggers})
     if len(tours) > 1:
         for tour in tours:
             rows.append(summarize(f"  {tour}", [t for t in triggers if t.match.tour == tour]))
+    if args.days > 31:  # держится ли результат во времени
+        for month in sorted({t.match.start_time[:7] for t in triggers}):
+            rows.append(summarize(f"  {month}", [t for t in triggers if t.match.start_time[:7] == month]))
     if not args.no_compare:  # контрольные группы — с чем сравнивать
         for r in (Rules(args.streak, "loss", False, args.max_gap),
                   Rules(args.streak, "win", True, args.max_gap),
