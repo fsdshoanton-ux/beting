@@ -94,3 +94,52 @@ class SofascoreTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BotTest(unittest.TestCase):
+    """Бот без сети: Sofascore подменён, Telegram не нужен."""
+
+    def ev(self, i, home, away, ts, state="notstarted", winner=None, sets=()):
+        return {"id": i, "startTimestamp": ts, "winnerCode": winner,
+                "status": {"type": state, "description": "Ended" if state == "finished" else ""},
+                "homeTeam": {"name": home}, "awayTeam": {"name": away},
+                "homeScore": {f"period{k + 1}": a for k, (a, b) in enumerate(sets)},
+                "awayScore": {f"period{k + 1}": b for k, (a, b) in enumerate(sets)},
+                "tournament": {"name": "Shanghai", "category": {"name": "ATP"}}}
+
+    def test_signal_then_result(self):
+        from datetime import datetime, timezone
+        from tennis.bot import Bot
+
+        now = datetime(2026, 10, 7, 12, tzinfo=timezone.utc)
+        base = int(now.timestamp())
+        events = [self.ev(1, "A", "B", base - 3 * 86400, "finished", 2, [(3, 6), (2, 6)]),
+                  self.ev(2, "C", "A", base - 86400, "finished", 1, [(6, 1), (6, 4)]),
+                  self.ev(3, "A", "D", base + 3600)]
+        with tempfile.TemporaryDirectory() as d:
+            bot = Bot(os.path.join(d, "h.csv"), os.path.join(d, "s.json"), Rules(), ("ATP",),
+                      history_days=5, fetch_day=lambda day: {"events": events}, log=lambda *_: None)
+            bot.refresh_history(now.date())
+            msgs = bot.new_signals(now)
+            self.assertEqual(len(msgs), 1)
+            self.assertIn("Ставка: A выиграет 1-й сет", msgs[0])
+            self.assertEqual(bot.new_signals(now), [])  # повторно не шлёт
+
+            events[2] = self.ev(3, "A", "D", base + 3600, "finished", 2, [(6, 4), (3, 6), (2, 6)])
+            bot.refresh_history(now.date())
+            res = bot.resolve(now)
+            self.assertIn("✅ A взял 1-й сет", res[0])
+            self.assertIn("1 из 1", bot.stats())
+
+            bot.save()  # состояние переживает перезапуск
+            bot2 = Bot(os.path.join(d, "h.csv"), os.path.join(d, "s.json"), Rules(), ("ATP",))
+            self.assertEqual(bot2.resolve(now), [])
+            self.assertIn("1 из 1", bot2.stats())
+
+    def test_commands(self):
+        from tennis.bot import Bot
+        with tempfile.TemporaryDirectory() as d:
+            bot = Bot(os.path.join(d, "h.csv"), os.path.join(d, "s.json"), Rules(), ("ATP",))
+            self.assertIn("Критерии", bot.handle("/start", 42)[0])
+            self.assertEqual(bot.state["chat_id"], 42)
+            self.assertIn("Итогов пока нет", bot.handle("/stats@my_bot", 42)[0])

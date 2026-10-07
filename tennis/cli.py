@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from . import demo, sofascore
 from .models import merge, read_csv, write_csv
-from .strategy import Rules, find_triggers, format_table, format_trigger, summarize
+from .strategy import Rules, find_candidates, find_triggers, format_table, format_trigger, summarize
 
 
 def _load(path: str):
@@ -108,32 +108,43 @@ def cmd_analyze(args) -> None:
 def cmd_candidates(args) -> None:
     """Предстоящие матчи, где игрок подходит под стратегию."""
     history = _filter(_load(args.data), args)
-    rules = Rules(streak=args.streak, straight_sets=not args.any_score)
-    per = defaultdict(list)
-    for m in sorted(history, key=lambda m: m.start_time):
-        if m.status != "walkover" and m.winner:
-            per[m.player1].append(m)
-            per[m.player2].append(m)
+    rules = Rules(streak=args.streak, straight_sets=not args.any_score, max_gap_days=args.max_gap)
     today = datetime.now(timezone.utc).date()
     tours = tuple(t.strip() for t in args.tours.split(",")) if args.tours else ()
-    found = 0
+    upcoming = []
     for d in (today, today + timedelta(days=1)):
         try:
-            upcoming = sofascore.parse_events(sofascore.fetch_day(d, tours), tours, finished=False)
+            upcoming += sofascore.parse_events(sofascore.fetch_day(d, tours), tours, finished=False)
         except Exception as e:
             print(f"{d}: не удалось загрузить расписание — {e}")
-            continue
-        for m in upcoming:
-            if args.gender not in ("all", m.gender):
-                continue
-            for p in (m.player1, m.player2):
-                prev = per[p][-rules.streak:]
-                if len(prev) == rules.streak and all(rules.fits(x, p) for x in prev):
-                    found += 1
-                    print(f"{m.start_time[:16].replace('T', ' ')} UTC [{m.gender} {m.tour}] "
-                          f"{m.tournament}: {p} — {m.opponent(p)}  (ставка: П1 в 1-м сете за {p})")
+    upcoming = [m for m in {m.match_id: m for m in upcoming}.values()
+                if args.gender in ("all", m.gender)]
+    found = find_candidates(history, upcoming, rules)
+    for t in found:
+        m = t.match
+        print(f"{m.start_time[:16].replace('T', ' ')} UTC [{m.gender} {m.tour}] "
+              f"{m.tournament}: {t.player} — {m.opponent(t.player)}  (ставка: {t.player} выиграет 1-й сет)")
     if not found:
         print("Подходящих предстоящих матчей не найдено.")
+
+
+def cmd_bot(args) -> None:
+    from .bot import Bot, Telegram, run
+    token = args.token or os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        sys.exit("Нужен токен бота: --token <токен> или переменная TELEGRAM_BOT_TOKEN "
+                 "(токен выдаёт @BotFather в Telegram).")
+    tours = tuple(t.strip() for t in args.tours.split(",") if t.strip())
+    rules = Rules(streak=args.streak, straight_sets=not args.any_score, max_gap_days=args.max_gap)
+    bot = Bot(args.history_file, args.state, rules, tours, gender=args.gender, ahead_hours=args.ahead,
+              history_days=args.history_days, tz=args.tz)
+    print(bot.criteria())
+    print("Бот запущен. Напишите ему /start в Telegram. Остановить — Ctrl+C.")
+    try:
+        run(bot, Telegram(token), args.interval)
+    except KeyboardInterrupt:
+        bot.save()
+        print("Остановлен.")
 
 
 def main(argv=None) -> None:
@@ -172,7 +183,24 @@ def main(argv=None) -> None:
 
     p = sub.add_parser("candidates", help="предстоящие матчи под стратегию (Sofascore)")
     filters(p)
+    p.add_argument("--max-gap", type=float, help="макс. дней между серией и матчем")
     p.set_defaults(fn=cmd_candidates)
+
+    p = sub.add_parser("bot", help="Telegram-бот: присылает подходящие матчи")
+    p.add_argument("--token", help="токен от @BotFather (или TELEGRAM_BOT_TOKEN)")
+    p.add_argument("--gender", choices=["all", "M", "W"], default="M")
+    p.add_argument("--tours", default="ATP,Challenger",
+                   help="через запятую: ATP,WTA,WTA 125,Challenger,ITF Men,ITF Women")
+    p.add_argument("--streak", type=int, default=2, help="сколько поражений подряд")
+    p.add_argument("--any-score", action="store_true", help="поражения с любым счётом, не только 0-2")
+    p.add_argument("--max-gap", type=float, help="макс. дней между серией и матчем")
+    p.add_argument("--ahead", type=float, default=24, help="на сколько часов вперёд искать матчи")
+    p.add_argument("--interval", type=float, default=30, help="проверка раз в N минут")
+    p.add_argument("--history-days", type=int, default=60, help="история при первом запуске, дней")
+    p.add_argument("--tz", default="Europe/Moscow", help="часовой пояс для времени матчей")
+    p.add_argument("--state", default="data/bot_state.json")
+    p.add_argument("--history-file", default="data/bot_history.csv", help="куда бот сохраняет матчи")
+    p.set_defaults(fn=cmd_bot)
 
     args = ap.parse_args(argv)
     args.fn(args)

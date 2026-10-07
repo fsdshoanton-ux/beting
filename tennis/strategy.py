@@ -165,3 +165,29 @@ def format_trigger(t: Trigger) -> str:
     return (f"{m.start_time[:16].replace('T', ' ')} [{m.gender} {m.tour}] {t.player} — "
             f"{m.opponent(t.player)}: {score_for(m, t.player)} → {fs}, "
             f"матч {'выиграл' if t.match_won else 'проиграл'}\n    до этого: {prev}")
+
+
+def player_histories(matches: list[TennisMatch]) -> dict[str, list[TennisMatch]]:
+    """Сыгранные матчи каждого игрока по времени (без неявок)."""
+    per: dict[str, list[TennisMatch]] = defaultdict(list)
+    for m in sorted(matches, key=lambda m: (m.start_time, m.match_id)):
+        if m.status != "walkover" and m.winner:
+            per[m.player1].append(m)
+            per[m.player2].append(m)
+    return per
+
+
+def find_candidates(history: list[TennisMatch], upcoming: list[TennisMatch],
+                    rules: Rules) -> list[Trigger]:
+    """Предстоящие матчи, где игрок подходит под стратегию (как find_triggers, но без исхода)."""
+    per = player_histories(history)
+    out = []
+    for m in sorted(upcoming, key=lambda m: (m.start_time, m.match_id)):
+        for p in (m.player1, m.player2):
+            prev = [x for x in per.get(p, []) if x.start_time < m.start_time][-rules.streak:]
+            if (len(prev) == rules.streak and all(rules.fits(x, p) for x in prev)
+                    and (rules.max_gap_days is None
+                         or (_ts(m.start_time) - _ts(prev[-1].start_time)).total_seconds()
+                         <= rules.max_gap_days * 86400)):
+                out.append(Trigger(p, m, prev))
+    return out
