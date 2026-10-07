@@ -115,7 +115,7 @@ def cmd_candidates(args) -> None:
     found = 0
     for d in (today, today + timedelta(days=1)):
         try:
-            upcoming = sofascore.parse_events(sofascore.fetch_day(d), tours, finished=False)
+            upcoming = sofascore.parse_events(sofascore.fetch_day(d, tours), tours, finished=False)
         except Exception as e:
             print(f"{d}: не удалось загрузить расписание — {e}")
             continue
@@ -139,7 +139,7 @@ def main(argv=None) -> None:
 
     def filters(p):
         p.add_argument("--gender", choices=["all", "M", "W"], default="all", help="M — мужчины, W — женщины")
-        p.add_argument("--tours", default="", help="через запятую: ATP,WTA,Challenger,ITF Men,ITF Women")
+        p.add_argument("--tours", default="", help="через запятую: ATP,WTA,WTA 125,Challenger,ITF Men,ITF Women")
         p.add_argument("--streak", type=int, default=2, help="сколько поражений подряд")
         p.add_argument("--any-score", action="store_true", help="поражения с любым счётом, не только 0-2")
 
@@ -149,7 +149,7 @@ def main(argv=None) -> None:
                    help="доп. дней до окна, чтобы знать прошлые матчи игроков")
     p.add_argument("--until", help="последний день YYYY-MM-DD (по умолчанию вчера)")
     p.add_argument("--tours", default=",".join(sofascore.DEFAULT_TOURS))
-    p.add_argument("--pause", type=float, default=1.0)
+    p.add_argument("--pause", type=float, default=0.5)
     p.set_defaults(fn=cmd_collect)
 
     p = sub.add_parser("demo", help="синтетические данные для проверки")

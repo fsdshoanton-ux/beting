@@ -1,10 +1,9 @@
 """Сбор результатов тенниса с публичного JSON API Sofascore.
 
-ВНИМАНИЕ: из среды разработки api.sofascore.com был недоступен, поэтому
-разбор написан по известной структуре ответа и на живом API не проверялся.
-Если что-то не сходится, откройте в браузере
-https://api.sofascore.com/api/v1/sport/tennis/scheduled-events/2026-10-01
-и сверьте поля.
+Общий адрес ``sport/tennis/scheduled-events/{день}`` отвечает 404 (проверено
+в октябре 2026), поэтому матчи берутся по категориям:
+``category/{id}/scheduled-events/{день}``. Ответ за день захватывает и
+соседние дни (часовой пояс), дубли убираются по id матча.
 
 Ожидаемая структура (один элемент ``events``):
     id, startTimestamp, winnerCode (1/2),
@@ -22,18 +21,36 @@ from datetime import date, datetime, timedelta, timezone
 
 from .models import TennisMatch
 
-DAY_URL = "https://api.sofascore.com/api/v1/sport/tennis/scheduled-events/{day}"
-DEFAULT_TOURS = ("ATP", "WTA", "Challenger", "ITF Men", "ITF Women")
+DAY_URL = "https://api.sofascore.com/api/v1/category/{category}/scheduled-events/{day}"
+# id категорий Sofascore: /api/v1/sport/tennis/categories
+CATEGORIES = {"ATP": 3, "WTA": 6, "Challenger": 72, "WTA 125": 871,
+              "ITF Men": 785, "ITF Women": 213}
+DEFAULT_TOURS = tuple(CATEGORIES)
 WOMEN_CATEGORIES = ("WTA", "ITF Women", "WTA 125")
 
 
-def fetch_day(day: date, timeout: int = 20) -> dict:
-    req = urllib.request.Request(DAY_URL.format(day=day.isoformat()), headers={
+def fetch_category_day(category_id: int, day: date, timeout: int = 20) -> dict:
+    url = DAY_URL.format(category=category_id, day=day.isoformat())
+    req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
         "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
+
+
+def fetch_day(day: date, tours=DEFAULT_TOURS, pause: float = 0.5) -> dict:
+    """События всех нужных категорий за день, склеенные в один ответ."""
+    events, seen = [], set()
+    for tour in tours or DEFAULT_TOURS:
+        if tour not in CATEGORIES:
+            raise ValueError(f"неизвестный тур {tour!r}, есть: {', '.join(CATEGORIES)}")
+        for ev in fetch_category_day(CATEGORIES[tour], day).get("events", []):
+            if ev.get("id") not in seen:
+                seen.add(ev.get("id"))
+                events.append(ev)
+        time.sleep(pause)
+    return {"events": events}
 
 
 def _is_doubles(ev: dict) -> bool:
@@ -108,11 +125,10 @@ def collect(start: date, end: date, tours=DEFAULT_TOURS, pause: float = 1.0,
     out, day = [], start
     while day <= end:
         try:
-            ms = parse_events(fetch_day(day), tours)
+            ms = parse_events(fetch_day(day, tours, pause), tours)
             log(f"{day}: {len(ms)} матчей")
             out.extend(ms)
         except Exception as e:  # сеть/блокировка — пропускаем день, но сообщаем
             log(f"{day}: ошибка загрузки — {e}")
         day += timedelta(days=1)
-        time.sleep(pause)
     return out
